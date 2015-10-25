@@ -1,0 +1,141 @@
+---
+output: html_document
+---
+
+## Prediction of a Set of Physical Exercise Outcomes Using a Trained Statistical Model
+
+## Overview
+The "Weight Lifting Exercises"" dataset has to do w/the area of "human activity recognition" but is unique in that it allows us to predict not what the activity being done was, but how well. 
+
+"Six young healthy participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)." (from http://groupware.les.inf.puc-rio.br/har#ixzz3pbVGlixn)
+
+For this experiment, I constructed and trained several different models on the Training dataset, and subsequently predicted both their accuracy (in terms of the correct "Classe" output var) on the Training and Testing datasets.
+
+## Basic Exploratory Analysis of the Data
+
+### Missing Values
+
+The training dataset has major problems. Training has only 406 complete cases of 19,622 obs. 99 of its vars each have 19,216 missing vals. Testing has 99 vars, each having 20 missing vals (of 20 obs). All of these cols were removed below. Notably, many of the predictive algorithms fail by default on NA's, and it is hard to impute anything w/such a great percentage of NA's in these cols.
+
+### Getting Rid of the X Var (Observation #)
+
+The X var was troublesome in several ways and it took me a while to realize it. First, using only Training, I was experimenting w/an RPART model. The fancyRpartPlot, even w/large numbers of obs and vigorous cross-validation, always chose X as the sole predictor (w/up to 78% accuracy). This probably indicates some ordering issue of the Classe values -- e.g., more A's may show up earlier in the file.
+
+More troublesome, when I left X in Training and Testing -- and this happened on every RPART or RF model I trained, many of the RF's w/99% accuracy -- when I predicted Testing I simply received a vector of all "A"" Classe vars.
+
+I removed the X from both datasets and things began to work. Interestingly, RPART immediately found significant variables (see Plot 1). Also, some train commands took much longer to finish.
+
+## Model Choices
+
+The predicted outcome var here, Classe, has five categories. While linear models, like GLM, can be configured for binary outcomes, I experimented with three algorithms that are often used for non-linear data:
+
+- RPART
+- RF (Random Forest)
+- GBM (Boosting)
+
+I was especially interested in the latter two b/c the lecture video stated that they are often among the most accurate of all models.
+
+## Machine Issues
+
+Many of my experiments leading to model choices were hampered by program aborts (either w/out meaningful errors, or most likely memory allocation failures). Many trains took over fifteen minutes. This affected my choices in the next section, e.g., choosing a 10-fold cross-validation over, say, a 3-fold, could cut the time way down and avoid an abort (aborts almost always occurred on cross-validation)
+
+## Cross-Validation and Subsetting of Training
+
+I made the choice of using the statistics output rich
+"trainControl" parameter to the train command. I set it up separately and included it in the command. I used various k-folds, but gave up on the "repeatedcv" option b/c the machine couldn't handle it. While you can certainly do some of this work manually, I didn't see a reason to.
+
+Importantly, purely for performance and avoidance of aborts, I most often only used part of the Training set. Since there may have been an uneven distribution of Classe outputs (see above), I simply did a random sample of the whole dataset to get the rows I needed for a train.
+
+## Loading, Subsetting, Cleaning
+
+```{r, loadData, echo=TRUE, message=FALSE}
+library(caret)
+library(AppliedPredictiveModeling)
+library(rattle)
+
+training <- read.table("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                        header=TRUE, sep=",", na.strings=c("NA", ""))
+testing <- read.table("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+                      header=TRUE, sep=",", na.strings=c("NA", ""))
+# Inspect the training set
+comCases <- nrow(training[complete.cases(training),])
+# Only 406 complete cases of 19,622 obs. Why?
+trainingMVCnt <- sapply(training, function(x) sum(is.na(x)))
+# 99 vars each have 19,216 missing vals (of 19,622 rows)
+testingMVCnt <- sapply(testing, function(x) sum(is.na(x)))
+# 99 vars each have 20 missing vals (of 20 rows)
+```
+I regularly changed the number of rows randomly 
+sampled (subsetted) from Training, as I worked.
+This was purely for performance reasons and to avoid aborts.
+```{r, sampleData, echo=FALSE, message=FALSE}
+training <- training[sample(1:nrow(training), 2000,
+                            replace=FALSE),] 
+```
+Get rid of NA cols and X var.
+```{r, cleanData, echo=TRUE, message=FALSE}
+mvCols <- colnames(training)[colSums(is.na(training)) > 0]
+# exclude 99 vars w/almost all missing vals from training
+mvVars <- names(training) %in% mvCols
+training <- training[!mvVars]
+training <- training[c(-1)]
+mvCols <- colnames(testing)[colSums(is.na(testing)) > 0]
+# exclude 99 vars w/ all missing vals from test
+mvVars <- names(testing) %in% mvCols
+testing <- testing[!mvVars]
+testing <- testing[c(-1)]
+```
+
+Set up the cross-val obj, then train. This was the "best" model (GBM "boost", w/3-fold C-V)
+
+```{r, crossValTrain, echo=TRUE, message=FALSE, results='hide'}
+
+## 3-fold CV here -- I varied this
+fitControl <- trainControl(
+    method = "cv",
+    number = 3)
+
+set.seed(825)
+modFit <- train(classe ~ ., data = training,
+                 method = "gbm",
+                trControl = fitControl)
+```
+```{r, showResult, echo=TRUE, message=FALSE}
+modPred <- predict(modFit, newdata=training)
+confusionMatrix(modPred, training$classe)
+qplot(modPred, classe, data=training, 
+       main="GBM Predict vs. Actual (2000 r.s. of train ds, 3-fold c-vz)")
+```
+
+
+This next plot shows the dramatic change in RPART (and all the algorithms) when the X var is removed. Before removal of X, it would always be the sole predictor in the tree. 
+
+```{r, effectOfRemovingX, echo=TRUE, message=FALSE}
+set.seed(825)
+modFit <- train(classe ~ ., data = training,
+                 method = "rpart")
+
+modPred <- predict(modFit, newdata=training)
+confusionMatrix(modPred, training$classe)
+fancyRpartPlot(modFit$finalModel, main="Plot 1", sub="The Effect of Removing X on RPART(previously X was the only predictor)")
+```
+
+  
+  
+   
+## Model Performance and Accuracy
+
+This is a brief summary of several of the models' details (all of the models in the table were trained and predicted w/o the X var).
+
+
+Model Type    |   Accuracy (%) | Details        |Predictd
+------------- | -------------  | ---------------|--------
+RPART         | 54             | n=10K, no C-V  | 6/20                 
+RF            | 98.3           | n=2k, 3-K C-V  | 19/20
+GBM           | 98.3           | n=2k, 3-K C-V  | 20/20
+
+It's important to note that many runs were attempted, some erroring out. Notably:
+
+- RPART did get higher accuracy w/high k-folds and sample sizes (up to 78%) but this was w/the X var included and really meant very little.
+- RF (Random Forest) rose with folds of 5 and 10 to over 99%, even on small (1000 obs) samples. However, again, this has distorted meaning b/c the X var was included.
+- The model that got all the Testing prediction questions right was GBM above, followed closely by the RF (one answer wrong).
